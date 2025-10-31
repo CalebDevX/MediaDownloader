@@ -1,0 +1,114 @@
+Skip to main content
+Render
+Yt-dlp file is not running on my web service
+
+Log In
+
+​
+
+​
+
+​
+Welcome to the Render community! We’re excited to have you here.
+
+As a reminder, we offer free personalized support through the Contact Support link in the Render dashboard. That remains the best place to ask questions about specific services in your account.
+
+This forum is intended for general questions about Render features that aren’t already answered by Render docs. It is also a place for the Render community to connect, chat and help each other out.
+
+Since this is a public forum, please be careful about posting personal information, logs, or other sensitive data!
+
+Yt-dlp file is not running on my web service
+
+1.1k
+views
+
+3
+links
+
+
+Feb 2024
+Mar 2024
+
+x2023x
+
+1
+Feb 2024
+I was developing my app on my local windows 10 system and it works fine, but when i uploaded the app on render it started showing this Error:
+
+Screenshot 2024-02-26 040700
+Screenshot 2024-02-26 040700
+1004×141 6.33 KB
+
+its a nodejs app , thanks :wave:
+
+[SOLVED]: It’s a permissions issue as the web service is running on linux, i tried to change the file permissions via shell but it’s paid and can’t be accessible by free instances so I used the command along with the build command so that it changes yt-dlp file permissions on each deploy. Go to you…
+
+1.1k
+views
+
+3
+links
+
+
+
+ddupas
+Feb 2024
+on the npm package page the second line says:
+YT-dlp itself will not be automatically downloaded
+you can install yt-dlp in your deploy step using
+pip install yt-dlp
+you will have to modify your javascript to use the python version instead of the win32 version
+read this entire page: yt-dlp-wrap - npm
+
+
+
+x2023x
+Feb 2024
+I have replaced the win_32 version with the linux version and got the same error, I think its a permission issue because the linux version should work properly, do u have any ideas on changing folder’s permissions on render?
+
+by the way this is the linux version i used:
+https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
+
+
+
+x2023x
+Feb 2024
+[SOLVED]: It’s a permissions issue as the web service is running on linux, i tried to change the file permissions via shell but it’s paid and can’t be accessible by free instances so I used the command along with the build command so that it changes yt-dlp file permissions on each deploy.
+
+Go to your Dashboard :point_right: Build & Deploy :point_right: Build Command and set it to:
+
+npm install; chmod -R 777 ./yt-dlp
+
+Note: This method is for free instances (paid instances can do it through the shell).
+
+
+1 month later
+
+Closed on Mar 27, 2024
+
+This topic was automatically closed 30 days after the last reply. New replies are no longer allowed.
+
+
+Hello! Looks like you’re enjoying the discussion, but you haven’t signed up for an account yet.
+Tired of scrolling through the same posts? When you create an account you’ll always come back to where you left off. With an account you can also be notified of new replies, save bookmarks, and use likes to thank others. We can all work together to make this community great. heart
+
+
+Sign Up
+
+Maybe later
+
+no thanks
+
+Related topics
+Topic list, column headers with buttons are sortable.
+Topic	Replies	Views	Activity
+Yt-dlp issue on webservice
+5	268	Jan 29
+Yt-dlp sign-in problem
+2	2.0k	Nov 2024
+Deploying Angular app
+1	6.9k	Jan 2021
+Static env built with Docker
+5	628	Feb 2021
+The Deploy is success but still the web is not working
+7	2.1k	Feb 2023
