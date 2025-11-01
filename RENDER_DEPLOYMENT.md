@@ -69,6 +69,13 @@ If needed, you can add these in Render's Environment tab:
 - API keys for services
 - Debug flags
 
+If you want Spotify metadata/preview support, add these environment variables in Render (Service → Environment):
+
+- `SPOTIFY_CLIENT_ID` — your Spotify app client id
+- `SPOTIFY_CLIENT_SECRET` — your Spotify app client secret
+
+Without these credentials the Spotify feature will return an informative error explaining how to enable Spotify API access.
+
 ### Cost
 
 This configuration works on Render's **Free tier** but will:

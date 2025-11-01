@@ -4,6 +4,8 @@ import os
 import time
 import uuid
 from threading import Thread
+import audiomack_downloader as amdl
+import spotify_utils as spdu
 
 app = Flask(__name__)
 
@@ -86,6 +88,65 @@ def fetch_info():
         if not url:
             return jsonify({'error': 'URL is required'}), 400
 
+        # If this is a Spotify URL, use the Spotify API helper to fetch metadata (preview URL when available)
+        url_lower = url.lower()
+        if 'spotify.com' in url_lower:
+            try:
+                info = spdu.extract_info(url)
+
+                # Build audio_formats similar to yt-dlp structure (preview URLs only)
+                audio_formats = []
+                for f in info.get('formats', []):
+                    if not f.get('url'):
+                        continue
+                    ext = f.get('ext', 'mp3')
+                    audio_formats.append({
+                        'format_id': f.get('format_id') or 'preview',
+                        'quality': 'Preview',
+                        'ext': ext,
+                        'filesize': 'Unknown'
+                    })
+
+                return jsonify({
+                    'success': True,
+                    'title': info.get('title', 'Unknown Title'),
+                    'thumbnail': info.get('thumbnail', ''),
+                    'uploader': info.get('uploader', 'Unknown'),
+                    'duration': info.get('duration') or 'Unknown',
+                    'video_formats': [],
+                    'audio_formats': audio_formats[:8]
+                })
+            except Exception as e:
+                return jsonify({'error': f'Spotify extractor error: {str(e)}'}), 400
+
+        # If this is an Audiomack URL, use the custom extractor instead of yt-dlp
+        if 'audiomack.com' in url_lower:
+            try:
+                info = amdl.extract_info(url)
+
+                # Build audio_formats similar to yt-dlp structure
+                audio_formats = []
+                for f in info.get('formats', []):
+                    ext = f.get('ext', 'mp3')
+                    audio_formats.append({
+                        'format_id': f.get('format_id') or f.get('ext'),
+                        'quality': 'Audio',
+                        'ext': ext,
+                        'filesize': 'Unknown'
+                    })
+
+                return jsonify({
+                    'success': True,
+                    'title': info.get('title', 'Unknown Title'),
+                    'thumbnail': info.get('thumbnail', ''),
+                    'uploader': info.get('uploader', 'Unknown'),
+                    'duration': info.get('duration') or 'Unknown',
+                    'video_formats': [],
+                    'audio_formats': audio_formats[:8]
+                })
+            except Exception as e:
+                return jsonify({'error': f'Audiomack extractor error: {str(e)}'}), 400
+
         # Enhanced options for Instagram and other platforms
         ydl_opts = {
             'quiet': True,
@@ -97,7 +158,6 @@ def fetch_info():
             'geo_bypass_country': 'US',
             'age_limit': None,
             'nocheckcertificate': True,
-            'source_address': '0.0.0.0',
             'force_ipv4': True,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
@@ -450,134 +510,266 @@ def start_download():
 
 @app.route('/download', methods=['POST'])
 def download():
-    download_id = None
-    try:
-        data = request.get_json()
-        url = data.get('url')
-        format_id = data.get('format_id')
-        download_type = data.get('type', 'video')
-        download_id = data.get('download_id')
+    """Start an asynchronous download worker and return immediately.
 
-        if not url:
-            return jsonify({'error': 'URL is required'}), 400
+    The actual download runs in a daemon thread so the request doesn't block the
+    gunicorn worker (Render may kill long-running requests). Clients should poll
+    `/progress/<download_id>` for status and fetch `/static/downloads/...` when
+    complete.
+    """
+    data = request.get_json()
+    url = data.get('url')
+    format_id = data.get('format_id')
+    download_type = data.get('type', 'video')
+    download_id = data.get('download_id')
 
-        if not download_id:
-            return jsonify({'error': 'Download ID is required'}), 400
+    if not url:
+        return jsonify({'error': 'URL is required'}), 400
 
-        timestamp = int(time.time())
+    if not download_id:
+        return jsonify({'error': 'Download ID is required'}), 400
 
-        # Update progress status
-        if download_id in download_progress:
-            download_progress[download_id]['status'] = 'downloading'
-            download_progress[download_id]['message'] = 'Starting download...'
+    timestamp = int(time.time())
 
-        if download_type == 'audio':
-            output_template = os.path.join(DOWNLOAD_FOLDER, f'audio_{timestamp}.%(ext)s')
-            audio_format = format_id if format_id else 'bestaudio/best'
-            ydl_opts = {
-                'format': audio_format,
-                'outtmpl': output_template,
-                'quiet': True,
-                'no_warnings': True,
-                'progress_hooks': [lambda d: progress_hook(d, download_id)],
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '320',
-                }],
-                'socket_timeout': 30,
-                'retries': 5,
-                'geo_bypass': True,
-                'nocheckcertificate': True,
-                'source_address': '0.0.0.0',
-                'force_ipv4': True,
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-                    'Accept': '*/*',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                },
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['android', 'web'],
-                        'skip': ['hls', 'dash'],
-                    },
-                },
-            }
-        else:
-            output_template = os.path.join(DOWNLOAD_FOLDER, f'video_{timestamp}.%(ext)s')
-            video_format = format_id if format_id else 'bestvideo+bestaudio/best'
-            ydl_opts = {
-                'format': video_format,
-                'outtmpl': output_template,
-                'quiet': True,
-                'no_warnings': True,
-                'merge_output_format': 'mp4',
-                'progress_hooks': [lambda d: progress_hook(d, download_id)],
-                'socket_timeout': 30,
-                'retries': 5,
-                'geo_bypass': True,
-                'nocheckcertificate': True,
-                'source_address': '0.0.0.0',
-                'force_ipv4': True,
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-                    'Accept': '*/*',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                },
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['android', 'web'],
-                        'skip': ['hls', 'dash'],
-                    },
-                },
-            }
+    # initialize/mark status
+    download_progress[download_id] = {
+        'status': 'queued',
+        'percentage': 0,
+        'message': 'Download queued',
+        'timestamp': timestamp,
+        'type': download_type
+    }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        downloaded_files = [f for f in os.listdir(DOWNLOAD_FOLDER) if f.startswith(f'{download_type}_{timestamp}')]
-
-        if not downloaded_files:
-            if download_id in download_progress:
-                download_progress[download_id] = {'status': 'error', 'percentage': 0, 'message': 'No file was created'}
-                # Schedule cleanup for this error case too
-                def cleanup_no_file():
+    def worker(url, fmt_id, d_type, d_id, ts):
+        try:
+            # mark as starting
+            download_progress[d_id] = {'status': 'downloading', 'percentage': 0, 'message': 'Starting download...'}
+            # If Audiomack, use custom downloader
+            if 'spotify.com' in (url or '').lower():
+                try:
+                    info = spdu.extract_info(url)
+                except Exception as e:
+                    download_progress[d_id] = {'status': 'error', 'percentage': 0, 'message': str(e)}
                     time.sleep(10)
-                    download_progress.pop(download_id, None)
-                Thread(target=cleanup_no_file, daemon=True).start()
-            return jsonify({'error': 'Download failed - no file was created'}), 500
+                    download_progress.pop(d_id, None)
+                    return
 
-        download_filename = downloaded_files[0]
-        download_url = f'/static/downloads/{download_filename}'
+                # pick preview URL if present
+                chosen = None
+                for f in info.get('formats', []):
+                    if f.get('url'):
+                        chosen = f
+                        break
 
-        # Mark as complete and schedule cleanup
-        if download_id in download_progress:
-            download_progress[download_id] = {
+                if not chosen or not chosen.get('url'):
+                    download_progress[d_id] = {'status': 'error', 'percentage': 0, 'message': 'No preview available for this Spotify resource. Full Spotify tracks are DRM-protected and cannot be downloaded directly.'}
+                    time.sleep(10)
+                    download_progress.pop(d_id, None)
+                    return
+
+                url_to_dl = chosen.get('url')
+                ext = chosen.get('ext') or ('mp3' if url_to_dl.lower().endswith('.mp3') else url_to_dl.split('.')[-1].split('?')[0])
+                out_name = f"{d_type}_{ts}.{ext}"
+                out_path = os.path.join(DOWNLOAD_FOLDER, out_name)
+
+                def progress_cb_sp(d):
+                    if d.get('status') == 'downloading':
+                        downloaded = d.get('downloaded_bytes', 0)
+                        total = d.get('total_bytes', 0)
+                        percentage = int((downloaded / total) * 100) if total else d.get('percentage', 0)
+                        download_progress[d_id] = {
+                            'status': 'downloading',
+                            'percentage': percentage,
+                            'downloaded': downloaded,
+                            'total': total,
+                            'speed': d.get('speed', 0),
+                        }
+                    elif d.get('status') == 'finished':
+                        download_progress[d_id] = {
+                            'status': 'processing',
+                            'percentage': 100,
+                            'message': 'Processing file...'
+                        }
+
+                try:
+                    amdl.download_direct(url_to_dl, out_path, progress_callback=progress_cb_sp)
+                except Exception as e:
+                    download_progress[d_id] = {'status': 'error', 'percentage': 0, 'message': str(e)}
+                    time.sleep(10)
+                    download_progress.pop(d_id, None)
+                    return
+
+                download_url = f'/static/downloads/{out_name}'
+                download_progress[d_id] = {
+                    'status': 'complete',
+                    'percentage': 100,
+                    'message': 'Download complete!',
+                    'download_url': download_url
+                }
+
+                time.sleep(10)
+                download_progress.pop(d_id, None)
+                return
+
+            if 'audiomack.com' in (url or '').lower():
+                try:
+                    info = amdl.extract_info(url)
+                except Exception as e:
+                    download_progress[d_id] = {'status': 'error', 'percentage': 0, 'message': str(e)}
+                    time.sleep(10)
+                    download_progress.pop(d_id, None)
+                    return
+
+                # pick first direct audio format (prefer mp3)
+                chosen = None
+                for f in info.get('formats', []):
+                    u = f.get('url')
+                    if not u:
+                        continue
+                    if u.lower().endswith('.mp3'):
+                        chosen = f
+                        break
+                    if '.mp3' in u.lower():
+                        chosen = f
+                if not chosen and info.get('formats'):
+                    chosen = info['formats'][0]
+
+                if not chosen or not chosen.get('url'):
+                    download_progress[d_id] = {'status': 'error', 'percentage': 0, 'message': 'No direct audio URL found for Audiomack'}
+                    time.sleep(10)
+                    download_progress.pop(d_id, None)
+                    return
+
+                # determine extension
+                url_to_dl = chosen.get('url')
+                ext = chosen.get('ext') or ('mp3' if url_to_dl.lower().endswith('.mp3') else url_to_dl.split('.')[-1].split('?')[0])
+                out_name = f"{d_type}_{ts}.{ext}"
+                out_path = os.path.join(DOWNLOAD_FOLDER, out_name)
+
+                def progress_cb(d):
+                    # d contains: status, downloaded_bytes, total_bytes, percentage, speed
+                    if d.get('status') == 'downloading':
+                        downloaded = d.get('downloaded_bytes', 0)
+                        total = d.get('total_bytes', 0)
+                        percentage = int((downloaded / total) * 100) if total else d.get('percentage', 0)
+                        download_progress[d_id] = {
+                            'status': 'downloading',
+                            'percentage': percentage,
+                            'downloaded': downloaded,
+                            'total': total,
+                            'speed': d.get('speed', 0),
+                        }
+                    elif d.get('status') == 'finished':
+                        download_progress[d_id] = {
+                            'status': 'processing',
+                            'percentage': 100,
+                            'message': 'Processing file...'
+                        }
+
+                try:
+                    amdl.download_direct(url_to_dl, out_path, progress_callback=progress_cb)
+                except Exception as e:
+                    download_progress[d_id] = {'status': 'error', 'percentage': 0, 'message': str(e)}
+                    time.sleep(10)
+                    download_progress.pop(d_id, None)
+                    return
+
+                # completed
+                download_url = f'/static/downloads/{out_name}'
+                download_progress[d_id] = {
+                    'status': 'complete',
+                    'percentage': 100,
+                    'message': 'Download complete!',
+                    'download_url': download_url
+                }
+
+                time.sleep(10)
+                download_progress.pop(d_id, None)
+                return
+
+            if d_type == 'audio':
+                output_template = os.path.join(DOWNLOAD_FOLDER, f'audio_{ts}.%(ext)s')
+                chosen_fmt = fmt_id if fmt_id else 'bestaudio/best'
+                ydl_opts = {
+                    'format': chosen_fmt,
+                    'outtmpl': output_template,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'progress_hooks': [lambda d: progress_hook(d, d_id)],
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '320',
+                    }],
+                    'socket_timeout': 30,
+                    'retries': 5,
+                    'geo_bypass': True,
+                    'nocheckcertificate': True,
+                    # Don't force an invalid source_address on Render
+                    'force_ipv4': True,
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+                        'Accept': '*/*',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                    },
+                }
+            else:
+                output_template = os.path.join(DOWNLOAD_FOLDER, f'video_{ts}.%(ext)s')
+                chosen_fmt = fmt_id if fmt_id else 'bestvideo+bestaudio/best'
+                ydl_opts = {
+                    'format': chosen_fmt,
+                    'outtmpl': output_template,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'merge_output_format': 'mp4',
+                    'progress_hooks': [lambda d: progress_hook(d, d_id)],
+                    'socket_timeout': 30,
+                    'retries': 5,
+                    'geo_bypass': True,
+                    'nocheckcertificate': True,
+                    'force_ipv4': True,
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+                        'Accept': '*/*',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                    },
+                }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+
+            # find created file
+            downloaded_files = [f for f in os.listdir(DOWNLOAD_FOLDER) if f.startswith(f'{d_type}_{ts}')]
+
+            if not downloaded_files:
+                download_progress[d_id] = {'status': 'error', 'percentage': 0, 'message': 'No file was created'}
+                time.sleep(10)
+                download_progress.pop(d_id, None)
+                return
+
+            download_filename = downloaded_files[0]
+            download_url = f'/static/downloads/{download_filename}'
+
+            download_progress[d_id] = {
                 'status': 'complete',
                 'percentage': 100,
-                'message': 'Download complete!'
+                'message': 'Download complete!',
+                'download_url': download_url
             }
 
-        # Schedule cleanup after 10 seconds
-        def cleanup():
+            # schedule cleanup of progress entry
             time.sleep(10)
-            download_progress.pop(download_id, None)
-        Thread(target=cleanup, daemon=True).start()
+            download_progress.pop(d_id, None)
 
-        return jsonify({
-            'success': True,
-            'download_url': download_url
-        })
+        except Exception as e:
+            download_progress[d_id] = {'status': 'error', 'percentage': 0, 'message': str(e)}
+            time.sleep(10)
+            download_progress.pop(d_id, None)
 
-    except Exception as e:
-        if download_id and download_id in download_progress:
-            download_progress[download_id] = {'status': 'error', 'percentage': 0, 'message': str(e)}
-            # Schedule cleanup for errored downloads too
-            def cleanup_error():
-                time.sleep(10)
-                download_progress.pop(download_id, None)
-            Thread(target=cleanup_error, daemon=True).start()
-        return jsonify({'error': f'Download failed: {str(e)}'}), 500
+    # Start background thread to perform the actual download so the request doesn't block
+    Thread(target=worker, args=(url, format_id, download_type, download_id, timestamp), daemon=True).start()
+
+    return jsonify({'success': True, 'download_id': download_id, 'message': 'Download started'}), 202
 
 if __name__ == '__main__':
     # For local development
